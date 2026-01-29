@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+#
+# flocked - Simple process management for background tasks
+#
+# Usage: flocked <command> [options] [arguments]
+#
+set -euo pipefail
+
+readonly VERSION="0.1.0"
+readonly FLOCKED_DIR="${FLOCKED_DIR:-/tmp/flocked-$USER}"
+
+# --- Output helpers ---
+
+die() {
+    printf '%s\n' "$*" >&2
+    exit 1
+}
+
+# --- Directory management ---
+
+_init_dir() {
+    mkdir -p "$FLOCKED_DIR" || die "Failed to create state directory: $FLOCKED_DIR"
+}
+
+_process_dir() {
+    printf '%s/%s' "$FLOCKED_DIR" "$1"
+}
+
+# --- Process helpers ---
+
+_is_valid_name() {
+    [[ "$1" =~ ^[a-zA-Z0-9_-]+$ ]]
+}
+
+_is_running() {
+    local pid="$1"
+    kill -0 "$pid" 2>/dev/null
+}
+
+_read_meta() {
+    local dir="$1" key="$2"
+    grep "^${key}=" "$dir/meta" 2>/dev/null | cut -d= -f2-
+}
+
+_kill_process_group() {
+    local pgid="$1"
+    local pid="${2:-}"
+    
+    # Try to kill by process group first (works on Linux, may fail on macOS)
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    
+    # Also kill the main PID directly if provided
+    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+    
+    # Wait briefly for graceful shutdown
+    local waited=0
+    while (( waited < 30 )); do
+        # Check if main process is still alive
+        if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.1
+        (( waited++ )) || true
+    done
+    
+    # Force kill if still alive
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+}
+
+# --- Commands ---
+
+cmd_run() {
+    local force=0
+    
+    # Parse -f flag
+    while [[ $# -gt 0 && "$1" == -* ]]; do
+        case "$1" in
+            -f) force=1; shift ;;
+            *)  die "Unknown option: $1" ;;
+        esac
+    done
+    
+    [[ $# -ge 2 ]] || die "Usage: flocked run [-f] <name> <command...>"
+    
+    local name="$1"; shift
+    local cmd=("$@")
+    
+    # Validate name
+    _is_valid_name "$name" || die "Invalid name: '$name' (use alphanumeric, dash, underscore)"
+    
+    _init_dir
+    local dir
+    dir="$(_process_dir "$name")"
+    
+    # Handle existing process
+    if [[ -d "$dir" ]]; then
+        local existing_pid
+        existing_pid="$(_read_meta "$dir" pid)"
+        
+        if [[ -n "$existing_pid" ]] && _is_running "$existing_pid"; then
+            if (( force )); then
+                local existing_pgid
+                existing_pgid="$(_read_meta "$dir" pgid)"
+                _kill_process_group "${existing_pgid:-$existing_pid}" "$existing_pid"
+            else
+                die "\"$name\" is already running (use -f to force)"
+            fi
+        fi
+        
+        # Clean up old directory
+        rm -rf "$dir"
+    fi
+    
+    # Create process directory
+    mkdir -p "$dir"
+    
+    # Start process in a new session/process group
+    # This ensures we can kill the entire process tree later
+    local pid pgid
+    
+    if command -v setsid >/dev/null 2>&1; then
+        # Linux: setsid creates a new session
+        setsid bash -c 'exec "$@"' _ "${cmd[@]}" >> "$dir/output.log" 2>&1 &
+        pid=$!
+        pgid=$pid
+    else
+        # macOS/BSD: use perl to create new session (perl is always available)
+        # The perl process becomes the session leader, then execs bash
+        perl -e '
+            use POSIX qw(setsid);
+            setsid() or die "setsid: $!";
+            exec @ARGV or die "exec: $!";
+        ' -- bash -c 'exec "$@"' _ "${cmd[@]}" >> "$dir/output.log" 2>&1 &
+        pid=$!
+        pgid=$pid
+    fi
+    
+    # Brief wait to let process start
+    sleep 0.1
+    
+    # Write meta file
+    cat > "$dir/meta" <<EOF
+pid=$pid
+pgid=$pgid
+cmd=${cmd[*]}
+started=$(date +%s)
+EOF
+    
+    printf 'Started "%s" (pid %d)\n' "$name" "$pid"
+}
+
+cmd_ps() {
+    die "Not implemented yet"
+}
+
+cmd_kill() {
+    die "Not implemented yet"
+}
+
+usage() {
+    cat <<EOF
+flocked $VERSION - Simple process management for background tasks
+
+Usage: flocked <command> [options] [arguments]
+
+Commands:
+  run [-f] <name> <command...>   Start a background process
+  ps [name]                      List processes or show details
+  kill <name>                    Kill process and all children
+
+Options:
+  -h, --help     Show this help
+  -v, --version  Show version
+
+Environment:
+  FLOCKED_DIR    State directory (default: /tmp/flocked-\$USER)
+
+Examples:
+  flocked run myserver ./server.sh --port 8080
+  flocked run -f myserver ./server.sh    # Force replace if running
+  flocked ps                             # List all processes
+  flocked ps myserver                    # Show details for myserver
+  flocked kill myserver                  # Kill myserver and children
+EOF
+}
+
+# --- Main ---
+
+main() {
+    case "${1:-}" in
+        run)   shift; cmd_run "$@" ;;
+        ps)    shift; cmd_ps "$@" ;;
+        kill)  shift; cmd_kill "$@" ;;
+        -h|--help)    usage ;;
+        -v|--version) printf 'flocked %s\n' "$VERSION" ;;
+        "")    usage; exit 1 ;;
+        *)     die "Unknown command: $1 (try 'flocked --help')" ;;
+    esac
+}
+
+main "$@"
