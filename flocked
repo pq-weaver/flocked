@@ -42,6 +42,37 @@ _read_meta() {
     grep "^${key}=" "$dir/meta" 2>/dev/null | cut -d= -f2-
 }
 
+_get_status() {
+    local dir="$1"
+    local exitcode pid
+    
+    exitcode="$(_read_meta "$dir" exitcode)"
+    if [[ -n "$exitcode" ]]; then
+        printf 'exited %s' "$exitcode"
+        return
+    fi
+    
+    pid="$(_read_meta "$dir" pid)"
+    if [[ -n "$pid" ]] && _is_running "$pid"; then
+        printf 'running'
+        return
+    fi
+    
+    printf 'dead'
+}
+
+_format_time() {
+    local ts="$1"
+    if [[ -z "$ts" ]]; then
+        printf 'unknown'
+        return
+    fi
+    # Try to format timestamp; fall back to raw if date fails
+    date -r "$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || \
+    date -d "@$ts" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || \
+    printf '%s' "$ts"
+}
+
 _kill_process_group() {
     local pgid="$1"
     local pid="${2:-}"
@@ -117,11 +148,23 @@ cmd_run() {
     
     # Start process in a new session/process group
     # This ensures we can kill the entire process tree later
+    # The wrapper captures exit code and writes it to meta file
     local pid pgid
+    local meta_file="$dir/meta"
+    local started
+    started=$(date +%s)
+    
+    # Wrapper script that runs command and captures exit code
+    local wrapper='
+        "$@"
+        ec=$?
+        printf "exitcode=%d\n" "$ec" >> "'"$meta_file"'"
+        exit $ec
+    '
     
     if command -v setsid >/dev/null 2>&1; then
         # Linux: setsid creates a new session
-        setsid bash -c 'exec "$@"' _ "${cmd[@]}" >> "$dir/output.log" 2>&1 &
+        setsid bash -c "$wrapper" _ "${cmd[@]}" >> "$dir/output.log" 2>&1 &
         pid=$!
         pgid=$pid
     else
@@ -131,27 +174,86 @@ cmd_run() {
             use POSIX qw(setsid);
             setsid() or die "setsid: $!";
             exec @ARGV or die "exec: $!";
-        ' -- bash -c 'exec "$@"' _ "${cmd[@]}" >> "$dir/output.log" 2>&1 &
+        ' -- bash -c "$wrapper" _ "${cmd[@]}" >> "$dir/output.log" 2>&1 &
         pid=$!
         pgid=$pid
     fi
     
-    # Brief wait to let process start
-    sleep 0.1
-    
-    # Write meta file
+    # Write meta file BEFORE process can complete (avoids race condition)
+    # The wrapper appends exitcode when process finishes
     cat > "$dir/meta" <<EOF
 pid=$pid
 pgid=$pgid
 cmd=${cmd[*]}
-started=$(date +%s)
+started=$started
 EOF
     
     printf 'Started "%s" (pid %d)\n' "$name" "$pid"
 }
 
 cmd_ps() {
-    die "Not implemented yet"
+    _init_dir
+    
+    if [[ $# -eq 0 ]]; then
+        # List all processes
+        _ps_list
+    else
+        # Show details for specific process
+        _ps_detail "$1"
+    fi
+}
+
+_ps_list() {
+    local name dir status output
+    local found=0
+    
+    # Print header
+    printf '%-12s %-12s %s\n' 'NAME' 'STATUS' 'OUTPUT'
+    
+    # List all process directories
+    for dir in "$FLOCKED_DIR"/*/; do
+        [[ -d "$dir" ]] || continue
+        [[ -f "$dir/meta" ]] || continue
+        
+        # Remove trailing slash
+        dir="${dir%/}"
+        
+        found=1
+        name="$(basename "$dir")"
+        status="$(_get_status "$dir")"
+        output="$dir/output.log"
+        
+        printf '%-12s %-12s %s\n' "$name" "$status" "$output"
+    done
+    
+    if (( ! found )); then
+        printf '(no processes)\n'
+    fi
+}
+
+_ps_detail() {
+    local name="$1"
+    local dir
+    dir="$(_process_dir "$name")"
+    
+    if [[ ! -d "$dir" ]] || [[ ! -f "$dir/meta" ]]; then
+        die "No such process: $name"
+    fi
+    
+    local status pid pgid cmd started
+    status="$(_get_status "$dir")"
+    pid="$(_read_meta "$dir" pid)"
+    pgid="$(_read_meta "$dir" pgid)"
+    cmd="$(_read_meta "$dir" cmd)"
+    started="$(_read_meta "$dir" started)"
+    
+    printf 'name: %s\n' "$name"
+    printf 'status: %s\n' "$status"
+    printf 'pid: %s\n' "$pid"
+    printf 'pgid: %s\n' "$pgid"
+    printf 'cmd: %s\n' "$cmd"
+    printf 'started: %s\n' "$(_format_time "$started")"
+    printf 'output: %s\n' "$dir/output.log"
 }
 
 cmd_kill() {

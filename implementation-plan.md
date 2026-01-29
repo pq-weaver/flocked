@@ -126,14 +126,20 @@ Implement the `ps` command to inspect process state.
 
 ### Implementation Steps
 
-- [ ] Modify `cmd_run()` to use a wrapper script that appends exitcode to `meta` on completion
-- [ ] Implement `cmd_ps()`:
+- [x] Modify `cmd_run()` to use a wrapper script that appends exitcode to `meta` on completion
+- [x] Implement `cmd_ps()`:
   - If no name provided: list all processes (name, status, output path)
   - If name provided: show detailed info (name, status, pid, pgid, cmd, started, output path)
   - Status logic:
     - If `exitcode` exists in meta: "exited N"
     - Else if PID is alive: "running"
     - Else: "dead" (process died without writing exitcode - shouldn't happen)
+
+### Implementation Notes
+
+- Fixed race condition: meta file is now written immediately after backgrounding the process (before the process can complete), so the wrapper can safely append `exitcode=N`.
+- Added helper functions: `_get_status()` for status detection, `_format_time()` for timestamp formatting.
+- All automated tests pass.
 
 ### Verification
 
