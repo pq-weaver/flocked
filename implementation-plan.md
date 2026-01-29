@@ -164,12 +164,19 @@ Implement reliable process tree termination.
 
 ### Implementation Steps
 
-- [ ] Implement `cmd_kill()`:
+- [x] Implement `cmd_kill()`:
   - Read PGID from `meta` file
   - Send SIGTERM to process group: `kill -TERM -$PGID`
   - Wait up to 5 seconds for process to exit
   - If still alive, send SIGKILL: `kill -KILL -$PGID`
   - Verify process is dead
+
+### Implementation Notes
+
+- Added `_pgid_has_processes()` helper to check if any processes remain in a process group (uses `pgrep -g`).
+- The kill command checks both the main PID and the process group to ensure complete cleanup.
+- SIGKILL fallback correctly kills stubborn processes that trap SIGTERM.
+- All automated tests pass.
 
 ### Verification
 

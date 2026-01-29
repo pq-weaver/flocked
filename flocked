@@ -37,6 +37,13 @@ _is_running() {
     kill -0 "$pid" 2>/dev/null
 }
 
+_pgid_has_processes() {
+    local pgid="$1"
+    # Check if any process exists in this process group
+    # Works on both Linux (pgrep) and macOS
+    pgrep -g "$pgid" >/dev/null 2>&1
+}
+
 _read_meta() {
     local dir="$1" key="$2"
     grep "^${key}=" "$dir/meta" 2>/dev/null | cut -d= -f2-
@@ -257,7 +264,61 @@ _ps_detail() {
 }
 
 cmd_kill() {
-    die "Not implemented yet"
+    [[ $# -ge 1 ]] || die "Usage: flocked kill <name>"
+    
+    local name="$1"
+    local dir
+    dir="$(_process_dir "$name")"
+    
+    # Check if process exists
+    if [[ ! -d "$dir" ]] || [[ ! -f "$dir/meta" ]]; then
+        die "No such process: $name"
+    fi
+    
+    local pid pgid status
+    pid="$(_read_meta "$dir" pid)"
+    pgid="$(_read_meta "$dir" pgid)"
+    status="$(_get_status "$dir")"
+    
+    # Check if already dead
+    if [[ "$status" == exited* ]] || [[ "$status" == "dead" ]]; then
+        printf '"%s" is not running (%s)\n' "$name" "$status"
+        return 0
+    fi
+    
+    # Kill the process group
+    printf 'Killing "%s" (pid %s, pgid %s)...\n' "$name" "$pid" "$pgid"
+    
+    # Send SIGTERM to process group and main PID
+    kill -TERM -- "-$pgid" 2>/dev/null || true
+    [[ -n "$pid" ]] && kill -TERM "$pid" 2>/dev/null || true
+    
+    # Wait up to 5 seconds for graceful shutdown
+    local waited=0
+    while (( waited < 50 )); do
+        # Check if main process and all group members are dead
+        if ! _is_running "$pid" && ! _pgid_has_processes "$pgid"; then
+            printf '"%s" terminated\n' "$name"
+            return 0
+        fi
+        sleep 0.1
+        (( waited++ )) || true
+    done
+    
+    # Force kill entire process group if anything remains
+    printf 'Sending SIGKILL...\n'
+    kill -KILL -- "-$pgid" 2>/dev/null || true
+    [[ -n "$pid" ]] && kill -KILL "$pid" 2>/dev/null || true
+    
+    # Wait briefly for SIGKILL to take effect
+    sleep 0.2
+    
+    # Final verification
+    if _is_running "$pid"; then
+        die "Failed to kill \"$name\" (pid $pid)"
+    fi
+    
+    printf '"%s" killed\n' "$name"
 }
 
 usage() {
