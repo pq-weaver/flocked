@@ -206,23 +206,29 @@ Create README and installation script for `curl | sh` usage.
 
 ### Implementation Steps
 
-- [ ] Create `README.md`:
+- [x] Create `README.md`:
   - Project description and philosophy
   - Installation instructions (curl | sh)
   - Manual installation
   - Usage examples (`run`, `run -f`, `ps`, `kill`)
   - Environment variables (`FLOCKED_DIR`)
   - Example AI agent workflow
-- [ ] Create `install.sh`:
+- [x] Create `install.sh`:
   - Detect if user has write access to `/usr/local/bin`
   - If not, use `~/.local/bin` and warn about PATH
   - Download `flocked` from GitHub raw URL
   - Make executable
   - Print success message with usage hint
-- [ ] Final polish:
-  - Add `--help` / `-h` flag support
-  - Add `--version` / `-v` flag
+- [x] Final polish:
+  - Add `--help` / `-h` flag support (already implemented)
+  - Add `--version` / `-v` flag (already implemented)
   - Ensure all error messages are clear and actionable
+
+### Implementation Notes
+
+- README follows the project's "museum piece" philosophy with clean, minimal documentation.
+- Install script supports both curl and wget, auto-detects install location.
+- All automated verification tests pass.
 
 ### Verification
 
