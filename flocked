@@ -6,7 +6,7 @@
 #
 set -euo pipefail
 
-readonly VERSION="0.1.0"
+readonly VERSION="0.1.1"
 readonly FLOCKED_DIR="${FLOCKED_DIR:-/tmp/flocked-$USER}"
 
 # --- Output helpers ---
@@ -321,6 +321,66 @@ cmd_kill() {
     printf '"%s" killed\n' "$name"
 }
 
+cmd_clean() {
+    _init_dir
+    
+    if [[ $# -eq 0 ]]; then
+        _clean_all
+    else
+        _clean_one "$1"
+    fi
+}
+
+_clean_one() {
+    local name="$1"
+    local dir
+    dir="$(_process_dir "$name")"
+    
+    # Check if process exists
+    if [[ ! -d "$dir" ]] || [[ ! -f "$dir/meta" ]]; then
+        die "No such process: $name"
+    fi
+    
+    local status
+    status="$(_get_status "$dir")"
+    
+    # Refuse to clean running processes
+    if [[ "$status" == "running" ]]; then
+        die "\"$name\" is still running (kill it first)"
+    fi
+    
+    rm -rf "$dir"
+    printf 'Cleaned "%s"\n' "$name"
+}
+
+_clean_all() {
+    local name dir status
+    local cleaned=0
+    
+    for dir in "$FLOCKED_DIR"/*/; do
+        [[ -d "$dir" ]] || continue
+        [[ -f "$dir/meta" ]] || continue
+        
+        dir="${dir%/}"
+        status="$(_get_status "$dir")"
+        
+        # Skip running processes
+        [[ "$status" == "running" ]] && continue
+        
+        name="$(basename "$dir")"
+        rm -rf "$dir"
+        (( cleaned++ )) || true
+    done
+    
+    if (( cleaned == 0 )); then
+        printf 'Nothing to clean\n'
+    elif (( cleaned == 1 )); then
+        printf 'Cleaned 1 process\n'
+    else
+        printf 'Cleaned %d processes\n' "$cleaned"
+    fi
+}
+
 usage() {
     cat <<EOF
 flocked $VERSION - Simple process management for background tasks
@@ -331,6 +391,7 @@ Commands:
   run [-f] <name> <command...>   Start a background process
   ps [name]                      List processes or show details
   kill <name>                    Kill process and all children
+  clean [name]                   Remove stopped process(es)
 
 Options:
   -h, --help     Show this help
@@ -345,6 +406,8 @@ Examples:
   flocked ps                             # List all processes
   flocked ps myserver                    # Show details for myserver
   flocked kill myserver                  # Kill myserver and children
+  flocked clean myserver                 # Remove myserver's state
+  flocked clean                          # Remove all stopped processes
 EOF
 }
 
@@ -355,6 +418,7 @@ main() {
         run)   shift; cmd_run "$@" ;;
         ps)    shift; cmd_ps "$@" ;;
         kill)  shift; cmd_kill "$@" ;;
+        clean) shift; cmd_clean "$@" ;;
         -h|--help)    usage ;;
         -v|--version) printf 'flocked %s\n' "$VERSION" ;;
         "")    usage; exit 1 ;;

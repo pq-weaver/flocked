@@ -15,6 +15,7 @@ flocked run -f <name> <cmd...>  # force replace existing
 flocked ps                      # list all
 flocked ps <name>               # show details
 flocked kill <name>             # kill process tree
+flocked clean [name]            # remove stopped process(es)
 ```
 
 ## Output
@@ -43,5 +44,5 @@ Cleanup after done:
 
 ```sh
 flocked kill devserver
-rm -rf $FLOCKED_DIR/devserver
+flocked clean devserver
 ```

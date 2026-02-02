@@ -112,10 +112,17 @@ grep ERROR $FLOCKED_DIR/myserver/output.log
 
 ### Clean up
 
-To remove a process entry after it exits:
+Remove stopped processes to free up state:
 
 ```sh
-rm -rf $FLOCKED_DIR/<name>
+flocked clean <name>
+```
+
+Or remove all stopped processes at once:
+
+```sh
+flocked clean
+# Cleaned 3 processes
 ```
 
 ## Environment Variables
@@ -143,7 +150,7 @@ flocked run -f devserver npm run dev -- --port 3001
 
 # When done, clean up
 flocked kill devserver
-rm -rf $FLOCKED_DIR/devserver
+flocked clean devserver
 ```
 
 ## State Directory
