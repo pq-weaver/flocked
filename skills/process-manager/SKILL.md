@@ -5,13 +5,15 @@ description: Always use this skill for managing long-running processes such as w
 
 # Process Management with flocked
 
-To manage processes, use the `flocked` utility.
+Use `flocked` to run, inspect, wait, and kill background processes.
 
 ## Commands
 
 ```sh
-flocked run <name> <cmd...>     # start process
-flocked run -f <name> <cmd...>  # force replace existing
+flocked run <name> <cmd...>                      # start process
+flocked run -f <name> <cmd...>                   # force replace
+flocked run --wait [--timeout <seconds>] <name> <cmd...>
+flocked wait [--timeout <seconds>] <name>        # attach+wait (timeout doesn't kill)
 flocked ps                      # list all
 flocked ps <name>               # show details
 flocked kill <name>             # kill process tree
@@ -20,8 +22,7 @@ flocked clean [name]            # remove stopped process(es)
 
 ## Output
 
-Flocked processes have their output written to a file at `$FLOCKED_DIR/<name>/output.log` (If `$FLOCKED_DIR` is not set, it defaults to `/tmp/flocked-$USER/`)
-You can also get the exact path to the output with `flocked ps [<name>]`.
+Output: `$FLOCKED_DIR/<name>/output.log` (default `FLOCKED_DIR=/tmp/flocked-$USER`). Path also shown by `flocked ps [<name>]`.
 
 You can use all your usual tools to work with the output file, such as Grep, Read file, or bash tools:
 

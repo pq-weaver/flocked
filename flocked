@@ -46,7 +46,14 @@ _pgid_has_processes() {
 
 _read_meta() {
     local dir="$1" key="$2"
-    grep "^${key}=" "$dir/meta" 2>/dev/null | cut -d= -f2-
+    # Never fail when the key is missing (important with set -e + pipefail).
+    # If the key occurs multiple times (shouldn't happen), return the last one.
+    local line value=""
+    while IFS= read -r line; do
+        [[ "$line" == "$key="* ]] || continue
+        value="${line#*=}"
+    done < "$dir/meta" 2>/dev/null || true
+    printf '%s' "$value"
 }
 
 _get_status() {
@@ -80,6 +87,63 @@ _format_time() {
     printf '%s' "$ts"
 }
 
+_parse_timeout_seconds() {
+    local raw="${1:-}"
+    [[ -n "$raw" ]] || die "Missing value for --timeout"
+    [[ "$raw" =~ ^[0-9]+$ ]] || die "Invalid timeout: '$raw' (must be integer seconds)"
+    # shellcheck disable=SC2128
+    (( raw >= 0 )) || die "Invalid timeout: '$raw' (must be >= 0)"
+    printf '%s' "$raw"
+}
+
+_wait_for_exit() {
+    local dir="$1"
+    local name="$2"
+    local timeout_seconds="$3"
+
+    local meta_file="$dir/meta"
+    [[ -f "$meta_file" ]] || die "No such process: $name"
+
+    local start_seconds="$SECONDS"
+    local pid exitcode
+
+    # If the main PID is already dead, we briefly retry reading exitcode to
+    # avoid reporting unknown status due to tiny write races.
+    local dead_retries=0
+
+    while true; do
+        exitcode="$(_read_meta "$dir" exitcode)"
+        if [[ -n "$exitcode" ]]; then
+            [[ "$exitcode" =~ ^-?[0-9]+$ ]] || die "\"$name\" has invalid recorded exitcode: $exitcode"
+            return "$exitcode"
+        fi
+
+        pid="$(_read_meta "$dir" pid)"
+        [[ -n "$pid" ]] || die "\"$name\" has no pid recorded"
+
+        if _is_running "$pid"; then
+            dead_retries=0
+            if (( SECONDS - start_seconds >= timeout_seconds )); then
+                printf 'Timeout expired waiting for "%s" after %ss (still running, pid %s)\n' "$name" "$timeout_seconds" "$pid" >&2
+                return 124
+            fi
+            sleep 0.1
+            continue
+        fi
+
+        # Main PID is not running and exitcode isn't recorded.
+        # Retry a few times quickly to allow meta updates; otherwise report unknown.
+        if (( dead_retries < 10 )); then
+            (( dead_retries++ )) || true
+            sleep 0.05
+            continue
+        fi
+
+        printf '"%s" is not running, but exit code is unknown\n' "$name" >&2
+        return 1
+    done
+}
+
 _kill_process_group() {
     local pgid="$1"
     local pid="${2:-}"
@@ -110,16 +174,24 @@ _kill_process_group() {
 
 cmd_run() {
     local force=0
+    local do_wait=0
+    local timeout_seconds=60
     
-    # Parse -f flag
+    # Parse flags
     while [[ $# -gt 0 && "$1" == -* ]]; do
         case "$1" in
             -f) force=1; shift ;;
+            --wait) do_wait=1; shift ;;
+            --timeout)
+                shift
+                timeout_seconds="$(_parse_timeout_seconds "${1:-}")"
+                shift
+                ;;
             *)  die "Unknown option: $1" ;;
         esac
     done
     
-    [[ $# -ge 2 ]] || die "Usage: flocked run [-f] <name> <command...>"
+    [[ $# -ge 2 ]] || die "Usage: flocked run [-f] [--wait] [--timeout <seconds>] <name> <command...>"
     
     local name="$1"; shift
     local cmd=("$@")
@@ -160,6 +232,10 @@ cmd_run() {
     local meta_file="$dir/meta"
     local started
     started=$(date +%s)
+
+    # Create/truncate meta file before launching to avoid races where a very
+    # fast process writes exitcode before we write initial metadata.
+    : > "$meta_file"
     
     # Wrapper script that runs command and captures exit code
     local wrapper='
@@ -186,9 +262,8 @@ cmd_run() {
         pgid=$pid
     fi
     
-    # Write meta file BEFORE process can complete (avoids race condition)
-    # The wrapper appends exitcode when process finishes
-    cat > "$dir/meta" <<EOF
+    # Write initial metadata (append; wrapper may have already written exitcode)
+    cat >> "$meta_file" <<EOF
 pid=$pid
 pgid=$pgid
 cmd=${cmd[*]}
@@ -196,6 +271,38 @@ started=$started
 EOF
     
     printf 'Started "%s" (pid %d)\n' "$name" "$pid"
+
+    if (( do_wait )); then
+        _wait_for_exit "$dir" "$name" "$timeout_seconds"
+    fi
+}
+
+cmd_wait() {
+    local timeout_seconds=60
+
+    while [[ $# -gt 0 && "$1" == -* ]]; do
+        case "$1" in
+            --timeout)
+                shift
+                timeout_seconds="$(_parse_timeout_seconds "${1:-}")"
+                shift
+                ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+
+    [[ $# -eq 1 ]] || die "Usage: flocked wait [--timeout <seconds>] <name>"
+
+    local name="$1"
+    _is_valid_name "$name" || die "Invalid name: '$name' (use alphanumeric, dash, underscore)"
+
+    _init_dir
+    local dir
+    dir="$(_process_dir "$name")"
+
+    [[ -d "$dir" ]] || die "No such process: $name"
+
+    _wait_for_exit "$dir" "$name" "$timeout_seconds"
 }
 
 cmd_ps() {
@@ -388,7 +495,10 @@ flocked $VERSION - Simple process management for background tasks
 Usage: flocked <command> [options] [arguments]
 
 Commands:
-  run [-f] <name> <command...>   Start a background process
+  run [-f] [--wait] [--timeout <seconds>] <name> <command...>
+                                Start a background process (optionally wait)
+  wait [--timeout <seconds>] <name>
+                                Wait for an existing process to finish
   ps [name]                      List processes or show details
   kill <name>                    Kill process and all children
   clean [name]                   Remove stopped process(es)
@@ -403,6 +513,8 @@ Environment:
 Examples:
   flocked run myserver ./server.sh --port 8080
   flocked run -f myserver ./server.sh    # Force replace if running
+  flocked run --wait --timeout 60 job ./job.sh
+  flocked wait --timeout 60 myserver
   flocked ps                             # List all processes
   flocked ps myserver                    # Show details for myserver
   flocked kill myserver                  # Kill myserver and children
@@ -416,6 +528,7 @@ EOF
 main() {
     case "${1:-}" in
         run)   shift; cmd_run "$@" ;;
+        wait)  shift; cmd_wait "$@" ;;
         ps)    shift; cmd_ps "$@" ;;
         kill)  shift; cmd_kill "$@" ;;
         clean) shift; cmd_clean "$@" ;;

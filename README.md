@@ -58,6 +58,12 @@ Use `-f` to force-replace a running process:
 flocked run -f myserver ./new-server.sh
 ```
 
+Wait for a process to finish (default timeout: 60s). The timeout only releases the caller; it does **not** kill the process:
+
+```sh
+flocked run --wait --timeout 60 myjob ./job.sh
+```
+
 ### List processes
 
 ```sh
@@ -124,6 +130,22 @@ Or remove all stopped processes at once:
 flocked clean
 # Cleaned 3 processes
 ```
+
+### Wait for an existing process
+
+Attach to a running (or already finished) managed process and wait for it to finish:
+
+```sh
+flocked wait <name>
+```
+
+Configure a timeout (in seconds). If the timeout expires, `flocked` returns a non-zero exit code but **does not** kill the running process:
+
+```sh
+flocked wait --timeout 60 myserver
+```
+
+On timeout, the command exits with code `124`.
 
 ## Environment Variables
 
